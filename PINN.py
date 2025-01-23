@@ -1,412 +1,226 @@
-import numpy as np
+import autograd.numpy as np  # Autograd-aware NumPy
+from autograd import grad
+import numpy as onp          # Regular NumPy for non-differentiable ops
 import matplotlib.pyplot as plt
 
-########################################################################
-# Node class
-########################################################################
-class Node:
-    def __init__(self, value, children=(), op=''):
-        self.value = float(value)
-        self.grad = 0.0
-        self.children = children
-        self.op = op
-        self._backward = lambda: None
+# Import Adam from autograd
+from autograd.misc.optimizers import adam
 
-    def __repr__(self):
-        return f"Node(value={self.value}, grad={self.grad}, op='{self.op}')"
-
-    # --------------------- Overloaded Operators --------------------- #
-    def __add__(self, other):
-        other = other if isinstance(other, Node) else Node(other)
-        out = Node(self.value + other.value, (self, other), op='+')
-        def _backward():
-            self.grad += out.grad * 1.0
-            other.grad += out.grad * 1.0
-        out._backward = _backward
-        return out
-
-    def __radd__(self, other):
-        return self.__add__(other)
-
-    def __sub__(self, other):
-        other = other if isinstance(other, Node) else Node(other)
-        out = Node(self.value - other.value, (self, other), op='-')
-        def _backward():
-            self.grad += out.grad * 1.0
-            other.grad += out.grad * -1.0
-        out._backward = _backward
-        return out
-
-    def __rsub__(self, other):
-        return Node(other) - self
-
-    def __mul__(self, other):
-        other = other if isinstance(other, Node) else Node(other)
-        out = Node(self.value * other.value, (self, other), op='*')
-        def _backward():
-            self.grad += out.grad * other.value
-            other.grad += out.grad * self.value
-        out._backward = _backward
-        return out
-
-    def __rmul__(self, other):
-        return self.__mul__(other)
-
-    def __truediv__(self, other):
-        other = other if isinstance(other, Node) else Node(other)
-        out = Node(self.value / other.value, (self, other), op='/')
-        def _backward():
-            self.grad += out.grad * (1.0 / other.value)
-            other.grad += out.grad * (-self.value / (other.value ** 2))
-        out._backward = _backward
-        return out
-
-    def __rtruediv__(self, other):
-        return Node(other) / self
-
-    def __pow__(self, exponent):
-        assert isinstance(exponent, (int, float)), "Exponent must be float/int"
-        out = Node(self.value ** exponent, (self,), op=f'**{exponent}')
-        def _backward():
-            self.grad += out.grad * (exponent * (self.value ** (exponent - 1)))
-        out._backward = _backward
-        return out
-    
-    # --------------------- Elementary Functions --------------------- #
-    def exp(self):
-        out = Node(np.exp(self.value), (self,), op='exp')
-        def _backward():
-            self.grad += out.grad * out.value
-        out._backward = _backward
-        return out
-
-    def sin(self):
-        out = Node(np.sin(self.value), (self,), op='sin')
-        def _backward():
-            self.grad += out.grad * np.cos(self.value)
-        out._backward = _backward
-        return out
-
-    def cos(self):
-        out = Node(np.cos(self.value), (self,), op='cos')
-        def _backward():
-            self.grad += out.grad * -np.sin(self.value)
-        out._backward = _backward
-        return out
-
-    def tanh(self):
-        """Hyperbolic tangent activation."""
-        val = np.tanh(self.value)
-        out = Node(val, (self,), op='tanh')
-        def _backward():
-            # derivative of tanh(x) = 1 - tanh^2(x)
-            self.grad += out.grad * (1 - val*val)
-        out._backward = _backward
-        return out
-
-    def zero_grad(self):
-        self.grad = 0.0
-
-
-########################################################################
-# Backprop & Utility Functions
-########################################################################
-def backward(root: Node):
-    topo_order = []
-    visited = set()
-
-    def build_topo(v):
-        if v not in visited:
-            visited.add(v)
-            for child in v.children:
-                build_topo(child)
-            topo_order.append(v)
-
-    build_topo(root)
-    root.grad = 1.0
-
-    for node in reversed(topo_order):
-        node._backward()
-
-def zero_grad_all(node_list):
-    for n in node_list:
-        n.grad = 0.0
-
-
-########################################################################
-# Tanh Activation (for hidden layers)
-########################################################################
-def tanh_activation(x: Node) -> Node:
-    return x.tanh()
-
-
-########################################################################
-# NeuralNetwork class
-########################################################################
-class NeuralNetwork:
-    def __init__(self, n_input, n_hidden, n_output, n_hidden_layers=2, weight_init_scale=0.1):
-        """
-        We'll build a network:
-            Input -> [Linear -> Tanh] x (n_hidden_layers) -> [Linear -> Output]
-        """
-        self.n_input = n_input
-        self.n_hidden = n_hidden
-        self.n_output = n_output
-        self.n_hidden_layers = n_hidden_layers
-        
-        self.weights = []
-        self.biases = []
-        
-        # 1) Input -> first hidden layer
-        in_dim = n_input
-        out_dim = n_hidden
-        W, b = self._init_layer(in_dim, out_dim, weight_init_scale)
-        self.weights.append(W)
-        self.biases.append(b)
-        
-        # 2) Hidden -> Hidden
-        for _ in range(n_hidden_layers - 1):
-            W, b = self._init_layer(n_hidden, n_hidden, weight_init_scale)
-            self.weights.append(W)
-            self.biases.append(b)
-        
-        # 3) Last hidden -> Output
-        W, b = self._init_layer(n_hidden, n_output, weight_init_scale)
-        self.weights.append(W)
-        self.biases.append(b)
-
-    def _init_layer(self, in_dim, out_dim, scale):
-        W = []
-        b = []
-        for _out in range(out_dim):
-            b_node = Node(np.random.randn() * scale)
-            b.append(b_node)
-            W_row = []
-            for _in in range(in_dim):
-                w_node = Node(np.random.randn() * scale)
-                W_row.append(w_node)
-            W.append(W_row)
-        return W, b
-
-    def forward(self, x):
-        """Forward pass for a single input x (float or Node)."""
-        if not isinstance(x, list):
-            x = [x] if isinstance(x, Node) else [Node(x)]
-        
-        out = x
-        total_layers = len(self.weights)  # hidden layers + final output layer
-        for layer_idx in range(total_layers):
-            W = self.weights[layer_idx]
-            b = self.biases[layer_idx]
-            new_out = []
-            for neuron_idx in range(len(W)):
-                z = b[neuron_idx]
-                for in_idx, in_val in enumerate(out):
-                    z = z + W[neuron_idx][in_idx] * in_val
-                # Use Tanh for hidden layers, no activation on final layer
-                if layer_idx < total_layers - 1:
-                    z = tanh_activation(z)
-                new_out.append(z)
-            out = new_out
-        
-        # if single output, return Node rather than list[Node]
-        if self.n_output == 1:
-            return out[0]
-        return out
-
-    def forward_batch(self, X):
-        """Forward pass for an array/list of inputs."""
-        outputs = []
-        for x_val in X:
-            outputs.append(self.forward(x_val))
-        return outputs
-
-    def parameters(self):
-        params = []
-        for W, b in zip(self.weights, self.biases):
-            for row in W:
-                for w in row:
-                    params.append(w)
-            for b_node in b:
-                params.append(b_node)
-        return params
-
-
-########################################################################
-# Adam optimizer
-########################################################################
-class AdamOptimizer:
-    def __init__(self, params, lr=1e-4, beta1=0.9, beta2=0.999, eps=1e-8):
-        self.params = params
-        self.lr = lr
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.eps = eps
-        self.m = {}
-        self.v = {}
-        self.t = 0
-        for p in self.params:
-            self.m[p] = 0.0
-            self.v[p] = 0.0
-
-    def step(self):
-        self.t += 1
-        for p in self.params:
-            g = p.grad
-            self.m[p] = self.beta1 * self.m[p] + (1 - self.beta1) * g
-            self.v[p] = self.beta2 * self.v[p] + (1 - self.beta2) * (g*g)
-            m_hat = self.m[p] / (1 - self.beta1**self.t)
-            v_hat = self.v[p] / (1 - self.beta2**self.t)
-            p.value -= self.lr * m_hat / (v_hat**0.5 + self.eps)
-
-
-########################################################################
-# Finite-Difference Approx for Derivatives (Vectorized)
-########################################################################
-def finite_diff_derivs_batch(net, t_points, delta=1e-4):
+###############################################################################
+# 1) Exact Analytical Solution
+###############################################################################
+def exact_solution(d, w0, t):
     """
-    Vectorized approach to get [u(t+delta), u(t-delta), u(t)] in 3 forward batches.
-    Returns three lists of Node: (u_plus, u_minus, u_zero).
+    Analytical solution to the under-damped harmonic oscillator:
+        d2u/dt2 + 2d du/dt + (w0^2) u = 0,
+    under the condition d < w0.
     """
-    t_plus = t_points + delta
-    t_minus = t_points - delta
-    
-    u_plus = net.forward_batch(t_plus)    # list of Node
-    u_minus = net.forward_batch(t_minus)  # list of Node
-    u_zero = net.forward_batch(t_points)  # list of Node
-    
-    return u_plus, u_minus, u_zero
+    assert d < w0, "Require underdamped condition d < w0."
+    w = np.sqrt(w0**2 - d**2)  # damped frequency
+    phi = np.arctan(-d / w)
+    A = 1.0 / (2.0 * np.cos(phi))
+    return np.exp(-d * t) * 2.0 * A * np.cos(phi + w * t)
 
-
-########################################################################
-# Vectorized PINN Loss
-########################################################################
-def pinn_loss_vectorized(net, t_collocation, mu, k, 
-                         boundary_conditions=None,
-                         boundary_weight=1.0, physics_weight=1.0,
-                         delta=1e-4):
+###############################################################################
+# 2) Small Fully-Connected Network (autograd.numpy)
+###############################################################################
+def init_network(n_input, n_output, n_hidden, n_layers, seed=123):
     """
-    1) Boundary conditions loss
-    2) PDE residual (using vectorized forward_batch for the collocation points)
+    Initialize a multi-layer perceptron (MLP) with the given dimensions.
+    We store parameters as a list of (W, b) pairs for each layer.
     """
-    # Boundary Loss
-    bc_loss = Node(0.0)
-    if boundary_conditions:
-        for bc in boundary_conditions:
-            t_bc_node = Node(bc["t"])
-            u_bc = net.forward(t_bc_node)
-            
-            if "target_u" in bc:
-                diff_u = u_bc - bc["target_u"]
-                bc_loss = bc_loss + diff_u*diff_u
-            
-            if "target_du" in bc:
-                # finite diff for derivative at boundary
-                t_plus = t_bc_node + delta
-                t_minus = t_bc_node - delta
-                u_plus = net.forward(t_plus)
-                u_minus = net.forward(t_minus)
-                du_bc = (u_plus - u_minus) / (2*delta)
-                diff_du = du_bc - bc["target_du"]
-                bc_loss = bc_loss + diff_du*diff_du
-
-    # PDE Residual
-    # Instead of looping for each t, we do 3 batch passes
-    u_plus, u_minus, u_zero = finite_diff_derivs_batch(net, t_collocation, delta=delta)
+    onp.random.seed(seed)  # seed the RNG for reproducibility
+    params = []
     
-    residual_sum = Node(0.0)
-    N = len(t_collocation)
-    for i in range(N):
-        du_i = (u_plus[i] - u_minus[i]) / (2*delta)
-        d2u_i = (u_plus[i] - (u_zero[i]*2.0) + u_minus[i]) / (delta*delta)
+    # Input -> first hidden
+    W = onp.random.randn(n_input, n_hidden) * np.sqrt(2.0/(n_input+n_hidden))
+    b = onp.zeros(n_hidden)
+    params.append((np.array(W), np.array(b)))
+
+    # Hidden -> hidden
+    for _ in range(n_layers - 1):
+        W = onp.random.randn(n_hidden, n_hidden) * np.sqrt(2.0/(n_hidden+n_hidden))
+        b = onp.zeros(n_hidden)
+        params.append((np.array(W), np.array(b)))
         
-        r_i = d2u_i + mu*du_i + k*u_zero[i]
-        residual_sum = residual_sum + r_i*r_i
+    # Last hidden -> output
+    W = onp.random.randn(n_hidden, n_output) * np.sqrt(2.0/(n_hidden+n_output))
+    b = onp.zeros(n_output)
+    params.append((np.array(W), np.array(b)))
 
-    physics_loss = residual_sum / N
-    return bc_loss*boundary_weight + physics_loss*physics_weight
+    return params
 
 
-########################################################################
-# Driver Code
-########################################################################
-if __name__ == "__main__":
-    # PDE constants
-    d = 2
-    w0 = 20
-    mu = 2*d
-    k = w0**2  # 400
+def neural_net(t, params):
+    """
+    Forward pass of the MLP. 
+    t can be shape (n_samples,) or (n_samples, 1). Returns shape (n_samples, 1).
+    """
+    if t.ndim == 1:
+        t = t[:, None]  # ensure shape (N,1)
+    
+    x = t
+    # Hidden layers (tanh activation)
+    for (W, b) in params[:-1]:
+        x = np.dot(x, W) + b
+        x = np.tanh(x)
+    # Final layer (linear)
+    W, b = params[-1]
+    x = np.dot(x, W) + b
+    return x
 
-    # 1) Create network
-    #    3 hidden layers, 32 neurons each, Tanh activation
-    net = NeuralNetwork(n_input=1, n_hidden=16, n_output=1, n_hidden_layers=3)
+###############################################################################
+# 3) Helper: scalar version + derivatives
+###############################################################################
+def neural_net_scalar(t, params):
+    """
+    A wrapper that treats 't' as a single scalar for autograd.grad.
+    We call the full network on a batch of size 1, then return the scalar.
+    """
+    return neural_net(np.array([t]), params)[0, 0]
 
-    # 2) Boundary conditions
-    #    u(0) = 1, u'(0) = 0
-    bc = [
-        {"t": 0.0, "target_u": 1.0},
-        {"t": 0.0, "target_du": 0.0},
-    ]
+# 1st derivative wrt scalar t
+dudt_nn_scalar = grad(neural_net_scalar, 0)
+# 2nd derivative wrt scalar t
+d2udt2_nn_scalar = grad(dudt_nn_scalar, 0)
 
-    # 3) Collocation points
-    #    80 points for better coverage
-    t_physics = np.linspace(0, 1, 80)
+def dudt_nn_array(t_array, params):
+    """
+    For multiple points, compute du/dt at each t by calling dudt_nn_scalar.
+    Returns shape (N,1).
+    """
+    vals = [dudt_nn_scalar(ti, params) for ti in t_array]
+    return np.array(vals)[:, None]
 
-    # -- (Optional) For random collocation each epoch, comment above lines and do:
-    # def sample_collocation_points(n=80):
-    #     return np.random.rand(n)  # in [0,1]
+def d2udt2_nn_array(t_array, params):
+    """
+    For multiple points, compute d2u/dt2 at each t by calling d2udt2_nn_scalar.
+    Returns shape (N,1).
+    """
+    vals = [d2udt2_nn_scalar(ti, params) for ti in t_array]
+    return np.array(vals)[:, None]
 
-    # 4) Create Adam optimizer (smaller lr)
-    opt = AdamOptimizer(net.parameters(), lr=1e-4)
+###############################################################################
+# 4) Define the Physics-Informed Loss
+###############################################################################
+def loss_fn(params, iteration):
+    """
+    total_loss = boundary_loss + lambda2 * physics_loss
+    boundary_loss = (u(0)-1)^2 + lambda1*(du/dt(0)-0)^2
+    physics_loss = MSE of (d2u/dt2 + mu*(du/dt) + k*u)
+    """
+    # Weight factors
+    lambda1 = 1e-1
+    # Increase PDE weight from 1e-4 to 1e-3 for stronger PDE enforcement:
+    lambda2 = 1e-4
 
-    # 5) Training
-    n_epochs = 2500
-    for epoch in range(n_epochs):
-        zero_grad_all(net.parameters())
+    # A) Boundary loss (enforce u(0)=1, du/dt(0)=0)
+    u0 = neural_net_scalar(0.0, params)       
+    dudt0 = dudt_nn_scalar(0.0, params)      
+
+    loss_b1 = (u0 - 1.0)**2
+    loss_b2 = (dudt0 - 0.0)**2
+    boundary_loss = loss_b1 + lambda1 * loss_b2
+
+    # B) Physics loss: d2u/dt2 + mu*dudt + k*u = 0
+    u_vals = neural_net(t_physics, params)            
+    dudt_vals = dudt_nn_array(t_physics, params)      
+    d2udt2_vals = d2udt2_nn_array(t_physics, params)  
+
+    residual = d2udt2_vals + mu*dudt_vals + k*u_vals
+    physics_loss = np.mean(residual**2)
+
+    return boundary_loss + lambda2*physics_loss
+
+###############################################################################
+# 5) Setup: PDE parameters, data, etc.
+###############################################################################
+d = 2.0
+w0 = 20.0
+mu = 2*d
+k = w0**2
+
+# Increase physics points from 30 to 50 for better coverage
+N_physics = 50
+t_physics = np.linspace(0, 1, N_physics)
+
+# For evaluation
+t_test = np.linspace(0, 1, 300)
+u_exact = exact_solution(d, w0, t_test)
+
+# Initialize network
+n_input = 1
+n_output = 1
+n_hidden = 32
+n_layers = 3
+params = init_network(n_input, n_output, n_hidden, n_layers, seed=123)
+
+###############################################################################
+# 6) Adam Optimizer Setup
+###############################################################################
+def callback(p, i, g):
+    """
+    Callback function called by Adam after each iteration.
+    We can use it to monitor loss, print or plot occasionally, etc.
+    """
+    
+    # print metrics
+    current_loss = loss_fn(p, i)
+    print(f"Iteration {i}, Loss={current_loss:.4e}")
+
+    # For efficiency, only evaluate and plot every 2000 steps
+    if i % 1000 == 0:
         
-        # If you want random collocation each epoch, do:
-        # t_physics = sample_collocation_points(80)
+        # Evaluate current solution for plotting
+        u_pred = neural_net(t_test, p)[:, 0]
         
-        loss_node = pinn_loss_vectorized(
-            net,
-            t_collocation=t_physics,
-            mu=mu,
-            k=k,
-            boundary_conditions=bc,
-            boundary_weight=1.0,
-            physics_weight=1.0,
-            delta=1e-4
-        )
+        # Plot the result
+        plt.figure(figsize=(5,2.5))
+        # Physics points (green)
+        plt.scatter(t_physics, np.zeros_like(t_physics), s=20, lw=0, 
+                    color="tab:green", alpha=0.6, label="Physics pts")
+        # Boundary (t=0)
+        plt.scatter([0.0], [0.0], s=20, lw=0, color="tab:red", alpha=0.6, label="Boundary pt")
         
-        backward(loss_node)
-        opt.step()
+        # Exact
+        plt.plot(t_test, u_exact, label="Exact", color="tab:gray", alpha=0.8)
+        # PINN
+        plt.plot(t_test, u_pred, label="PINN", color="tab:green")
+        
+        plt.title(f"Iteration {i}, Loss={current_loss:.4e}")
+        plt.legend()
+        plt.show()
 
-        # Print every 500 epochs
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch}, Loss = {loss_node.value:.6f}")
+# We define the gradient function for Adam
+grad_func = lambda p, i: grad(loss_fn)(p, i)
 
-    # 6) Evaluate
-    t_test = np.linspace(0, 1, 200)
-    preds = []
-    for t_ in t_test:
-        out_node = net.forward(t_)
-        preds.append(out_node.value)
+# Increase the number of iterations to 30k for a difficult, highly oscillatory problem
+num_iters = 30000
+step_size = 1e-3  # typical Adam step size
 
-    # 7) Exact solution
-    def exact_solution(d, w0, t_array):
-        w = np.sqrt(w0**2 - d**2)
-        phi = np.arctan(-d/w)
-        A = 1.0 / (2.0 * np.cos(phi))
-        return np.exp(-d*t_array) * 2.0 * A * np.cos(phi + w*t_array)
+###############################################################################
+# 7) Train with Adam
+###############################################################################
+from autograd.misc.optimizers import adam
 
-    u_exact = exact_solution(d, w0, t_test)
+best_params = adam(grad_func, 
+                   params,
+                   step_size=step_size, 
+                   num_iters=num_iters, 
+                   callback=callback)
 
-    print("\nFinal Comparison:")
-    idxs = [0, 50, 100, 150, 199]
-    for i in idxs:
-        print(f"  t={t_test[i]:.3f} | PINN={preds[i]:.5f} vs Exact={u_exact[i]:.5f}")
+###############################################################################
+# 8) Final Comparison
+###############################################################################
+u_pred = neural_net(t_test, best_params)[:, 0]
+final_loss = loss_fn(best_params, 0)
+print(f"Training complete. Final loss: {final_loss:.4e}")
 
-    plt.plot(t_test, preds, label="PINN")
-    plt.plot(t_test, u_exact, label="Exact", alpha=0.7)
-    plt.legend()
-    plt.show()
+plt.figure(figsize=(6,3))
+plt.plot(t_test, u_exact, label="Exact", color="tab:blue", alpha=0.8, linewidth=2)
+plt.plot(t_test, u_pred, label="PINN", color="tab:orange", linestyle="--", linewidth=2)
+plt.title("Final PINN vs. Exact (Damped Harmonic Oscillator)")
+plt.xlabel("t")
+plt.ylabel("u(t)")
+plt.legend()
+plt.show()
