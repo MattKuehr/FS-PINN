@@ -1,10 +1,55 @@
-import autograd.numpy as np  # Autograd-aware NumPy
+import autograd.numpy as np  
 from autograd import grad
-import numpy as onp          # Regular NumPy for non-differentiable ops
-import matplotlib.pyplot as plt
-
-# Import Adam from autograd
 from autograd.misc.optimizers import adam
+import numpy as onp          
+import matplotlib.pyplot as plt
+import os
+
+
+###############################################################################
+def create_results_folder():
+    # Get the current directory where the script is located
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Create a new results folder within this directory
+    results_folder_path = os.path.join(current_dir, "PINN Results")
+    os.makedirs(results_folder_path, exist_ok=False)
+
+
+def has_folder(folder_name) -> bool:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    folder_path = os.path.join(current_dir, folder_name)
+    return os.path.isdir(folder_path)
+
+
+def add_to_results_folder():
+    
+    # Locate script directory
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Find "PINN Results" Folder
+    try:
+        for root, dirs, files in os.walk(current_dir):
+            if "PINN Results" in dirs:
+                PINN_results_path = os.path.join(root, "PINN Results")
+    except FileNotFoundError as err:
+        print(err)
+    
+    files = os.listdir(PINN_results_path)
+    if files:
+        last_file = files[-1]
+        run_number = int(last_file.split("_")[-1])
+        # Add a new run result folder to "PINN Results"
+        run_name = "PINN_" + str(run_number + 1)
+        run_result_path = os.path.join(PINN_results_path, run_name)
+        os.makedirs(run_result_path, exist_ok=False)
+    else:
+        run_result_path = os.path.join(PINN_results_path, "PINN_0")
+        os.makedirs(run_result_path, exist_ok=False)
+
+
+
+###############################################################################
 
 ###############################################################################
 # 1) Exact Analytical Solution
@@ -20,6 +65,7 @@ def exact_solution(d, w0, t):
     phi = np.arctan(-d / w)
     A = 1.0 / (2.0 * np.cos(phi))
     return np.exp(-d * t) * 2.0 * A * np.cos(phi + w * t)
+
 
 ###############################################################################
 # 2) Small Fully-Connected Network (autograd.numpy)
@@ -69,6 +115,7 @@ def neural_net(t, params):
     x = np.dot(x, W) + b
     return x
 
+
 ###############################################################################
 # 3) Helper: scalar version + derivatives
 ###############################################################################
@@ -99,6 +146,7 @@ def d2udt2_nn_array(t_array, params):
     """
     vals = [d2udt2_nn_scalar(ti, params) for ti in t_array]
     return np.array(vals)[:, None]
+
 
 ###############################################################################
 # 4) Define the Physics-Informed Loss
@@ -132,6 +180,7 @@ def loss_fn(params, iteration):
 
     return boundary_loss + lambda2*physics_loss
 
+
 ###############################################################################
 # 5) Setup: PDE parameters, data, etc.
 ###############################################################################
@@ -155,9 +204,22 @@ n_hidden = 32
 n_layers = 3
 params = init_network(n_input, n_output, n_hidden, n_layers, seed=123)
 
+
 ###############################################################################
 # 6) Adam Optimizer Setup
 ###############################################################################
+def early_stopping() -> bool:
+    while True:
+        choice = input('Do you want to continue training? (y/n): ').strip().lower()
+        if choice == 'y':
+            break
+        elif choice == 'n':
+            print('User terminated training.')
+            exit()
+        else:
+            print('Incorrect input. Please select (y/n): ')
+            continue
+
 def callback(p, i, g):
     """
     Callback function called by Adam after each iteration.
@@ -191,6 +253,10 @@ def callback(p, i, g):
         plt.legend()
         plt.show()
 
+        # check if user wants to continue training
+        early_stopping()
+
+
 # We define the gradient function for Adam
 grad_func = lambda p, i: grad(loss_fn)(p, i)
 
@@ -198,16 +264,23 @@ grad_func = lambda p, i: grad(loss_fn)(p, i)
 num_iters = 30000
 step_size = 1e-3  # typical Adam step size
 
+
 ###############################################################################
 # 7) Train with Adam
 ###############################################################################
 from autograd.misc.optimizers import adam
+
+if not has_folder('PINN Results'):
+    create_results_folder()
+
+add_to_results_folder()
 
 best_params = adam(grad_func, 
                    params,
                    step_size=step_size, 
                    num_iters=num_iters, 
                    callback=callback)
+
 
 ###############################################################################
 # 8) Final Comparison
