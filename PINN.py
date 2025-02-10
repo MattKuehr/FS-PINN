@@ -7,6 +7,8 @@ import os
 
 
 ###############################################################################
+# 0) Helper functions
+###############################################################################
 def create_results_folder():
     # Get the current directory where the script is located
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -48,9 +50,6 @@ def add_to_results_folder():
         os.makedirs(run_result_path, exist_ok=False)
 
 
-
-###############################################################################
-
 ###############################################################################
 # 1) Exact Analytical Solution
 ###############################################################################
@@ -68,7 +67,7 @@ def exact_solution(d, w0, t):
 
 
 ###############################################################################
-# 2) Small Fully-Connected Network (autograd.numpy)
+# 2) Small Fully-Connected Network 
 ###############################################################################
 def init_network(n_input, n_output, n_hidden, n_layers, seed=123):
     """
@@ -126,10 +125,12 @@ def neural_net_scalar(t, params):
     """
     return neural_net(np.array([t]), params)[0, 0]
 
+
 # 1st derivative wrt scalar t
 dudt_nn_scalar = grad(neural_net_scalar, 0)
 # 2nd derivative wrt scalar t
 d2udt2_nn_scalar = grad(dudt_nn_scalar, 0)
+
 
 def dudt_nn_array(t_array, params):
     """
@@ -189,7 +190,7 @@ w0 = 20.0
 mu = 2*d
 k = w0**2
 
-# Increase physics points from 30 to 50 for better coverage
+# Generate physics (collocation) points
 N_physics = 50
 t_physics = np.linspace(0, 1, N_physics)
 
